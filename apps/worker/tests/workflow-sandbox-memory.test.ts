@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { ApplicationFailure } from "@temporalio/activity";
+import { fileURLToPath } from "node:url";
 import {
   ActivityRecorder,
   createTimeSkippingEnvironment,
@@ -10,8 +11,8 @@ import {
 
 const MAINTENANCE_QUEUE = "space-memory-maintenance";
 const MUTATION_QUEUE = "space-memory-mutations";
-const MAINTENANCE_PATH = new URL("../src/memory-maintenance-workflows.ts", import.meta.url).pathname;
-const MUTATION_PATH = new URL("../src/memory-mutation-workflows.ts", import.meta.url).pathname;
+const MAINTENANCE_PATH = fileURLToPath(new URL("../src/memory-maintenance-workflows.ts", import.meta.url));
+const MUTATION_PATH = fileURLToPath(new URL("../src/memory-mutation-workflows.ts", import.meta.url));
 
 const INPUT = { scheduledAt: "2026-10-23T00:00:00.000Z", traceId: "trace-run-1" };
 const RUN = {

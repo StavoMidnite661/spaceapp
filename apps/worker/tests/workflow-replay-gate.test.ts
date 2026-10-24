@@ -1,16 +1,17 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker, DeterminismViolationError } from "@temporalio/worker";
 import { temporal } from "@temporalio/proto";
 
-const FIXTURE_DIR = new URL("./fixtures/workflow-histories/", import.meta.url).pathname;
-const WORKFLOWS_PATH = new URL("../src/workflows.ts", import.meta.url).pathname;
-const PRE_PATCH_PATH = new URL("./support/pre-patch-workflows.ts", import.meta.url).pathname;
-const MAINTENANCE_PATH = new URL("../src/memory-maintenance-workflows.ts", import.meta.url).pathname;
-const MUTATION_PATH = new URL("../src/memory-mutation-workflows.ts", import.meta.url).pathname;
-const PROBE_PATH = new URL("./support/determinism-probe-workflows.ts", import.meta.url).pathname;
-const DRIFTED_PROBE_PATH = new URL("./support/determinism-probe-drifted-workflows.ts", import.meta.url).pathname;
+const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/workflow-histories/", import.meta.url));
+const WORKFLOWS_PATH = fileURLToPath(new URL("../src/workflows.ts", import.meta.url));
+const PRE_PATCH_PATH = fileURLToPath(new URL("./support/pre-patch-workflows.ts", import.meta.url));
+const MAINTENANCE_PATH = fileURLToPath(new URL("../src/memory-maintenance-workflows.ts", import.meta.url));
+const MUTATION_PATH = fileURLToPath(new URL("../src/memory-mutation-workflows.ts", import.meta.url));
+const PROBE_PATH = fileURLToPath(new URL("./support/determinism-probe-workflows.ts", import.meta.url));
+const DRIFTED_PROBE_PATH = fileURLToPath(new URL("./support/determinism-probe-drifted-workflows.ts", import.meta.url));
 
 type AnyRecord = Record<string, any>;
 

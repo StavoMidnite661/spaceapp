@@ -19,17 +19,17 @@ Each fixture is `{ workflowId, history: { events: [...] } }`, recorded from a
 
 ## Re-record policy
 
-Re-record **all** fixtures when any of the following changes:
+Re-record only for intentional `patched()` migrations. Preserve existing
+histories as compatibility evidence; add fixtures for newly introduced
+patched branches as needed.
+Re-record only the fixture(s) required by the migration.
 
-- a workflow's command sequence (activity calls, timers, signals, child
-  workflows, continue-as-new, patches/markers);
-- the stub activity return shapes used by the recorder (they determine which
-  branches a recorded run takes);
-- `@temporalio/*` major versions.
+Never overwrite a failing history after an unpatched workflow change. Fix the
+workflow or retain compatibility instead.
 
-Do **not** hand-edit a fixture. A history is evidence of one real run; the
-replay gate (`tests/workflow-replay-gate.test.ts`) is only meaningful when the
-fixture was produced by this recorder against the checked-out workflow code.
+Do not hand-edit recorded history events. Keep each fixture's `workflowId`
+aligned with the actual run; the replay gate is meaningful only when fixtures
+are produced by this recorder against the checked-out workflow code.
 
 `room-agent-supervisor-pre-patch.json` is recorded from the legacy
 (`mark*`/settle-boolean) supervisor in `tests/support/pre-patch-workflows.ts`;

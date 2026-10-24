@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { ApplicationFailure } from "@temporalio/activity";
+import { fileURLToPath } from "node:url";
 import {
   ActivityRecorder,
   createTimeSkippingEnvironment,
@@ -10,7 +11,7 @@ import {
 } from "./support/workflow-sandbox-kit.js";
 
 const QUEUE = "test-turns";
-const WORKFLOWS_PATH = new URL("../src/workflows.ts", import.meta.url).pathname;
+const WORKFLOWS_PATH = fileURLToPath(new URL("../src/workflows.ts", import.meta.url));
 
 type AnyRecord = Record<string, any>;
 

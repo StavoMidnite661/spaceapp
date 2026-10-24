@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
+import { fileURLToPath } from "node:url";
 import {
   ActivityRecorder,
   createTimeSkippingEnvironment,
@@ -10,7 +11,7 @@ import {
 } from "./support/workflow-sandbox-kit.js";
 
 const QUEUE = "test-dot-goal";
-const WORKFLOWS_PATH = new URL("../src/workflows.ts", import.meta.url).pathname;
+const WORKFLOWS_PATH = fileURLToPath(new URL("../src/workflows.ts", import.meta.url));
 const GOAL = "goal:test-1";
 
 const step = (state: string, goalStatus: string, runId: string | null = null) => ({ state, runId, goalStatus });
@@ -57,6 +58,13 @@ describe("real sandbox: dotGoalWorkflow", () => {
       workflowId: "wf:test-goal-wake", taskQueue: QUEUE, args: [{ goalId: GOAL }], followRuns: false
     });
     await rec.waitFor("dotGoalStep", 1);
+    let timerStarted = false;
+    for (let i = 0; i < 200; i++) {
+      timerStarted = (await historyEvents(handle)).some((e) => e.timerStartedEventAttributes);
+      if (timerStarted) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(timerStarted).toBe(true);
     await handle.signal("dotGoalWake");
     const result = await handle.result();
     expect(result).toEqual({ goalStatus: "COMPLETED" });

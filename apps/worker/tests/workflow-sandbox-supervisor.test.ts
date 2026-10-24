@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { TestWorkflowEnvironment } from "@temporalio/testing";
 import { ApplicationFailure } from "@temporalio/activity";
+import { fileURLToPath } from "node:url";
 import {
   ActivityRecorder,
   blockUntilCancelled,
@@ -18,8 +19,8 @@ const QUEUE = "test-supervisor";
 const LEGACY_QUEUE = "test-supervisor-legacy";
 const ROOM = "room:test";
 const PANE = "pane:test";
-const WORKFLOWS_PATH = new URL("../src/workflows.ts", import.meta.url).pathname;
-const PRE_PATCH_PATH = new URL("./support/pre-patch-workflows.ts", import.meta.url).pathname;
+const WORKFLOWS_PATH = fileURLToPath(new URL("../src/workflows.ts", import.meta.url));
+const PRE_PATCH_PATH = fileURLToPath(new URL("./support/pre-patch-workflows.ts", import.meta.url));
 
 type AnyRecord = Record<string, any>;
 type TrackedHandle = { cancel(): Promise<void>; result(): Promise<unknown> };

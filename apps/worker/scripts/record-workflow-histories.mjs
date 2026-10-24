@@ -4,10 +4,11 @@
  *   SPACE_TEST_TEMPORAL_TEST_SERVER=/path/to/temporal-test-server \
  *     npm run temporal:record-histories -w @space/worker
  *
- * Policy: re-record AFTER any change that alters workflow command sequences,
- * and re-record with the SAME stub activity shapes used here. A history whose
- * run never completed (supervisors idle forever) is snapshotted at a settled
- * point and cancelled; continue-as-new runs record the first run only.
+ * Policy: re-record only for intentional `patched()` migrations. Preserve
+ * existing histories as compatibility evidence; never overwrite a failing
+ * history after an unpatched workflow change. Add new histories only for the
+ * migrated branch. Idle supervisor snapshots are cancelled; continue-as-new
+ * histories record the first run only.
  */
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
@@ -74,8 +75,8 @@ const memoryActivities = {
   executePersistedMemoryChangeSet: () => ({ status: "APPLIED" })
 };
 
-async function record(name, workflowId, runner) {
-  const history = await runner();
+async function record(name, runner) {
+  const { workflowId, history } = await runner();
   const json = history.toJSON ? history.toJSON() : history;
   writeFileSync(join(FIXTURE_DIR, `${name}.json`), JSON.stringify({ workflowId, history: json }));
   console.log("recorded", name, (json.events ?? []).length, "events");
@@ -136,35 +137,35 @@ async function main() {
   console.log("workers up; recording");
 
   // 1. dummy turn
-  await record("dummy-turn", "space-dummy-turn:record-1", async () => {
+  await record("dummy-turn", async () => {
     const h = await start(uid("space-dummy-turn:record-1"), "record-main", "dummyTurnWorkflow", [{
       roomId: "room:test", paneId: "pane:test", prompt: "Run it.", artifactIds: [],
       agentRunId: "agent-run-1", permissionMode: null, collaborationMode: "default", traceId: "trace-run-1"
     }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 2. codex app server (native chat) turn
-  await record("codex-app-server-turn", "space-turn:record-1", async () => {
+  await record("codex-app-server-turn", async () => {
     const h = await start(uid("space-turn:record-1"), "record-main", "codexAppServerTurnWorkflow", [{
       roomId: "room:test", paneId: "pane:test", prompt: "Run it.", artifactIds: [],
       agentRunId: "agent-run-1", permissionMode: null, collaborationMode: "default", traceId: "trace-run-1",
       agentSessionId: "session-1", agentAssistantMessageId: "assist-1"
     }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 3. dot goal (DONE fast path)
-  await record("dot-goal", "space-dot-goal:record-1", async () => {
+  await record("dot-goal", async () => {
     const h = await start(uid("space-dot-goal:record-1"), "record-main", "dotGoalWorkflow", [{ goalId: "goal:record-1" }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 4. dot goal continue-as-new (300 WAITING iterations)
-  await record("dot-goal-continue-as-new", "space-dot-goal:record-can", async () => {
+  await record("dot-goal-continue-as-new", async () => {
     const step = () => ({ state: "WAITING", runId: null, goalStatus: "ACTIVE" });
     mainActivities.dotGoalStep = step;
     const h = await start(uid("space-dot-goal:record-can"), "record-main", "dotGoalWorkflow", [{ goalId: "goal:record-can" }], false);
@@ -172,68 +173,68 @@ async function main() {
     const history = await runHistory(h);
     mainActivities.dotGoalStep = () => ({ state: "DONE", runId: null, goalStatus: "COMPLETED" });
     await h.cancel().catch(() => undefined); // stop the follow-on run of the chain
-    return history;
+    return { workflowId: h.workflowId, history };
   });
 
   // 5. room agent supervisor (patched branch, settled snapshot)
-  await record("room-agent-supervisor", "space-room-supervisor:record-1", async () => {
+  await record("room-agent-supervisor", async () => {
     const h = await start(uid("space-room-supervisor:record-1"), "record-main", "roomAgentSupervisorWorkflow",
       [{ roomId: "room:test", pending: [queueItem("mission:record-1", "agent-run-1")] }], false);
     await sleep(4000);
     const history = await runHistory(h);
     await h.cancel().catch(() => undefined);
-    return history;
+    return { workflowId: h.workflowId, history };
   });
 
   // 6. pre-patch (legacy) supervisor, settled snapshot
-  await record("room-agent-supervisor-pre-patch", "space-room-supervisor:record-legacy", async () => {
+  await record("room-agent-supervisor-pre-patch", async () => {
     const h = await start(uid("space-room-supervisor:record-legacy"), "record-legacy", "roomAgentSupervisorWorkflow",
       [{ roomId: "room:test", pending: [queueItem("mission:record-1", "agent-run-1")] }], false);
     await sleep(4000);
     const history = await runHistory(h);
     await h.cancel().catch(() => undefined);
-    return history;
+    return { workflowId: h.workflowId, history };
   });
 
   // 7. room agent action (failure + report + rethrow)
-  await record("room-agent-action", "space-room-action:action:record-1", async () => {
+  await record("room-agent-action", async () => {
     mainActivities.runRoomAgentBackgroundAction = () => { throw new Error("action exploded"); };
     const h = await start(uid("space-room-action:action:record-1"), "record-main", "roomAgentActionWorkflow",
       [{ bridge: { roomId: "room:test", missionId: "mission:record-1" }, traceId: "trace-run-1" }]);
     try { await h.result(); } catch (e) { console.log("action-run result error:", e?.constructor?.name, e?.message); }
     mainActivities.runRoomAgentBackgroundAction = () => ({ ok: true });
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 8. memory maintenance (+ child consolidation with a change set)
-  await record("memory-maintenance", "space-memory-maintenance:record-1", async () => {
+  await record("memory-maintenance", async () => {
     const h = await start(uid("space-memory-maintenance:record-1"), "space-memory-maintenance", "memoryMaintenanceWorkflow",
       [{ scheduledAt: "2026-10-23T00:00:00.000Z", traceId: "trace-run-1" }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 9. memory consolidation (standalone, with change set)
-  await record("memory-consolidation", "space-memory-consolidation:record-1", async () => {
+  await record("memory-consolidation", async () => {
     const h = await start(uid("space-memory-consolidation:record-1"), "space-memory-maintenance", "memoryConsolidationWorkflow",
       [{ runId: "run:audit-1", traceId: "trace-run-1" }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 10. memory mutation
-  await record("memory-mutation", "space-memory-mutation:record-1", async () => {
+  await record("memory-mutation", async () => {
     const h = await start(uid("space-memory-mutation:record-1"), "space-memory-mutations", "memoryMutationWorkflow",
       [{ changeSetId: "changeset:1", traceId: "trace-run-1" }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   // 11. determinism probe
-  await record("determinism-probe", "determinism-probe:record-1", async () => {
+  await record("determinism-probe", async () => {
     const h = await start(uid("determinism-probe:record-1"), "record-probe", "determinismProbeWorkflow", [{ traceId: "trace-run-1" }]);
     await h.result();
-    return runHistory(h);
+    return { workflowId: h.workflowId, history: await runHistory(h) };
   });
 
   for (const { worker } of bundles) await worker.shutdown();
