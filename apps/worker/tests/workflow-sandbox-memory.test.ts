@@ -125,4 +125,18 @@ describe("real sandbox: memory maintenance + consolidation + mutation workflows"
     expect(rec.count("executePersistedMemoryChangeSet") - before.mutation).toBe(0);
     expect(rec.count("finalizeMemoryRepair") - before.finalize).toBe(0);
   }, 30_000);
+
+  it("maintenance retries when snapshot refresh fails with a retryable error", async () => {
+    let attempts = 0;
+    rec.impl.refreshMemoryGraphSnapshot = async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("transient refresh failure");
+      return snapshotResult;
+    };
+    const result = await env.client.workflow.execute("memoryMaintenanceWorkflow", {
+      workflowId: "space-memory-maintenance:test-6", taskQueue: MAINTENANCE_QUEUE, args: [INPUT]
+    });
+    expect(result).toMatchObject({ status: "REFRESHED" });
+    expect(attempts).toBe(3); // two retries then success
+  }, 30_000);
 });
