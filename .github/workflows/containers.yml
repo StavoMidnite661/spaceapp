@@ -71,3 +71,63 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check running container
+        run: |
+          case "${{ matrix.target }}" in
+            core)
+              mkdir -p /tmp/core-secrets
+              printf 'postgres://spaceapp:spaceapp@postgres:5432/spaceapp\n' > /tmp/core-secrets/database-url
+              printf 'test-secret-not-for-production\n' > /tmp/core-secrets/session-secret
+              printf 'test-setup-token-not-for-production\n' > /tmp/core-secrets/setup-token
+              docker run --rm -d --name smoke-postgres \
+                -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=spaceapp -e POSTGRES_DB=spaceapp \
+                pgvector/pgvector:0.8.3-pg17-trixie >/dev/null
+              docker run --rm -d --name spaceapp-ci-core-smoke \
+                --link smoke-postgres:postgres \
+                -v /tmp/core-secrets:/run/secrets:ro \
+                spaceapp-ci:core-${{ matrix.arch }} >/dev/null
+              for i in $(seq 1 30); do
+                if docker exec spaceapp-ci-core-smoke \
+                  node -e "fetch('http://127.0.0.1:4911/readyz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then
+                  echo "core smoke check passed"
+                  docker stop spaceapp-ci-core-smoke smoke-postgres >/dev/null 2>&1 || true
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "core smoke check failed"
+              docker logs spaceapp-ci-core-smoke 2>&1 || true
+              docker stop spaceapp-ci-core-smoke smoke-postgres >/dev/null 2>&1 || true
+              exit 1
+              ;;
+            cli)
+              docker run --rm -d --name spaceapp-ci-cli-smoke \
+                -e SPACE_CLI_ENABLED=true \
+                spaceapp-ci:cli-${{ matrix.arch }} >/dev/null
+              sleep 5
+              if docker inspect spaceapp-ci-cli-smoke --format='{{.State.Running}}' 2>/dev/null | grep -q true; then
+                echo "cli smoke check passed"
+                docker stop spaceapp-ci-cli-smoke >/dev/null 2>&1 || true
+                exit 0
+              fi
+              echo "cli smoke check failed"
+              docker logs spaceapp-ci-cli-smoke 2>&1 || true
+              docker stop spaceapp-ci-cli-smoke >/dev/null 2>&1 || true
+              exit 1
+              ;;
+            browser)
+              docker run --rm -d --name spaceapp-ci-browser-smoke \
+                spaceapp-ci:browser-${{ matrix.arch }} >/dev/null
+              sleep 8
+              if docker inspect spaceapp-ci-browser-smoke --format='{{.State.Running}}' 2>/dev/null | grep -q true; then
+                echo "browser smoke check passed"
+                docker stop spaceapp-ci-browser-smoke >/dev/null 2>&1 || true
+                exit 0
+              fi
+              echo "browser smoke check failed"
+              docker logs spaceapp-ci-browser-smoke 2>&1 || true
+              docker stop spaceapp-ci-browser-smoke >/dev/null 2>&1 || true
+              exit 1
+              ;;
+          esac

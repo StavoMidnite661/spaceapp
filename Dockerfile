@@ -54,25 +54,74 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
+COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
-COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
     && for name in codex claude gemini opencode qwen kimi grok deepseek autohand cursor copilot; do \
          ln -s /usr/local/bin/spaceapp-cli-wrapper "/usr/local/bin/${name}-vscode-parity"; \
        done
 
+# --- Per-target dependency closures ---
+
+FROM runtime-base AS core-deps
+WORKDIR /app
+COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/worker/package.json ./apps/worker/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/web/package.json ./apps/web/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/db/package.json ./packages/db/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/gateway/package.json ./packages/gateway/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/memory-graph/package.json ./packages/memory-graph/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/opencode-control/package.json ./packages/opencode-control/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/streaming/package.json ./packages/streaming/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/browser-host/package.json ./packages/browser-host/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/cli-host/package.json ./packages/cli-host/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/codex-app-server/package.json ./packages/codex-app-server/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/runtime/package.json ./packages/runtime/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/icons/package.json ./packages/icons/package.json
+RUN npm install --ignore-scripts --no-audit --no-fund --omit=dev \
+    --workspace=@space/api \
+    --workspace=@space/worker \
+    --workspace=@space/web \
+    --workspace=@space/db
+
+FROM runtime-base AS browser-deps
+WORKDIR /app
+COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/db/package.json ./packages/db/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/gateway/package.json ./packages/gateway/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/memory-graph/package.json ./packages/memory-graph/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/opencode-control/package.json ./packages/opencode-control/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/streaming/package.json ./packages/streaming/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/browser-host/package.json ./packages/browser-host/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/cli-host/package.json ./packages/cli-host/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/codex-app-server/package.json ./packages/codex-app-server/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/runtime/package.json ./packages/runtime/package.json
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/icons/package.json ./packages/icons/package.json
+RUN npm install --ignore-scripts --no-audit --no-fund --omit=dev \
+    --workspace=@space/api
+
+FROM runtime-base AS cli-deps
+WORKDIR /app
+COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/cli-host/package.json ./packages/cli-host/package.json
+RUN npm install --ignore-scripts --no-audit --no-fund --omit=dev \
+    --workspace=@space/cli-host
+
+# --- Final target images ---
+
 FROM runtime-base AS core
+COPY --from=core-deps --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/api/dist ./apps/api/dist
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/worker/dist ./apps/worker/dist
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/web/dist ./apps/web/dist
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/web/server.mjs ./apps/web/server.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/db/dist ./packages/db/dist
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -85,6 +134,8 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=browser-deps --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /app/apps/api/dist/browser-host-main.js ./apps/api/dist/browser-host-main.js
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
@@ -97,12 +148,12 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=cli-deps --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /app/packages/cli-host/dist ./packages/cli-host/dist
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
-# python3-minimal (about 13 MB): agents often check their work with a short python3 script (pilot F18).
-# OpenCode 2 (@opencode/cli): its postinstall picks the native binary for the image's platform.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
@@ -117,8 +168,6 @@ RUN apt-get update \
       /workspaces \
       /run/spaceapp-cli \
     && printf '%s\n' "$TARGETARCH" > /usr/local/share/spaceapp-cli-architecture
-# The application's default room project is /opt/spaceapp. CLI sessions run in /etc, as
-# /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
-# Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
+COPY --chown=spaceapp:spaceapp agent-skills ./agent-skills
 RUN ln -s /etc /opt/spaceapp
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]
