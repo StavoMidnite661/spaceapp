@@ -16,6 +16,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { DotGoalsRepository, DotsRepository } from "@space/db";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 /**
  * Space Dots Stage 4: Goals.
@@ -26,10 +27,10 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
-  wake(goalId: string): Promise<void>;
+  start(goalId: string, traceId?: string | null, traceparent?: string | null): Promise<void>;
+  wake(goalId: string, traceId?: string | null, traceparent?: string | null): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
-  ensure?(goalId: string): Promise<boolean>;
+  ensure?(goalId: string, traceId?: string | null, traceparent?: string | null): Promise<boolean>;
 }
 export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordinator {
   constructor(private readonly options: { address: string; namespace: string; taskQueue: string }) {}
@@ -38,11 +39,12 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  start(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE" });
+          args: [{ goalId, traceparent }], workflowIdReusePolicy: "REJECT_DUPLICATE",
+          memo: workflowCorrelationMemo({ traceId, traceparent }) });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -52,11 +54,12 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
       catch (error) { if (!(error instanceof WorkflowNotFoundError)) throw error; }
     });
   }
-  ensure(goalId: string) {
+  ensure(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "ALLOW_DUPLICATE" });
+          args: [{ goalId, traceparent }], workflowIdReusePolicy: "ALLOW_DUPLICATE",
+          memo: workflowCorrelationMemo({ traceId, traceparent }) });
         return true;
       } catch (error) {
         if (error instanceof WorkflowExecutionAlreadyStartedError) return false;
@@ -125,7 +128,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try { await deps.workflow.start(goal.goalId, request?.id ?? null, traceparentForTraceId(request?.id)); }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");
@@ -147,7 +150,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       const run = session ? await deps.store.getLatestSpaceAgentRun(session.sessionId) : null;
       if (session && run && (run.status === "QUEUED" || run.status === "RUNNING")) await deps.interrupt(session.paneId, "Goal cancelled by the user.").catch(() => undefined);
     }
-    await deps.workflow?.wake(goalId).catch(() => undefined);
+    await deps.workflow?.wake(goalId, request?.id ?? null, traceparentForTraceId(request?.id)).catch(() => undefined);
     await deps.audit(request, "dot.goal.control", goal.roomId, { dotId, goalId, action });
     return next;
   }
@@ -158,7 +161,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     if (!goal) throw new DotGoalError(404, "DOT_GOAL_NOT_FOUND", "Goal was not found.");
     const next = await deps.goals.addSteering(goalId, text);
     if (!next) throw new DotGoalError(409, "DOT_GOAL_STATE", "Guidance can be added only to an open Goal, up to 50 notes.");
-    await deps.workflow?.wake(goalId).catch(() => undefined);
+    await deps.workflow?.wake(goalId, request?.id ?? null, traceparentForTraceId(request?.id)).catch(() => undefined);
     await deps.audit(request, "dot.goal.steer", goal.roomId, { dotId, goalId });
     return next;
   }

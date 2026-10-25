@@ -97,18 +97,18 @@ export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
  * API reports the Goal finished. State lives in PostgreSQL; this workflow only
  * sequences steps, so it survives worker restarts and closed browsers.
  */
-export async function dotGoalWorkflow(input: { goalId: string }): Promise<{ goalStatus: string }> {
+export async function dotGoalWorkflow(input: { goalId: string; traceparent?: string | null }): Promise<{ goalStatus: string }> {
   let woken = false;
   setHandler(dotGoalWakeSignal, () => { woken = true; });
   const result = await runDotGoalLoop(input.goalId, {
-    step: (goalId) => dotGoalActivities.dotGoalStep(goalId),
-    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve(goalId, runId),
+    step: (goalId) => dotGoalActivities.dotGoalStep({ goalId, traceparent: input.traceparent }),
+    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve({ goalId, runId, traceparent: input.traceparent }),
     // A wake-up that arrives during an activity is kept and ends the next wait at once.
     wait: async (timeout) => { await condition(() => woken, timeout); woken = false; },
     shouldContinueAsNew: () => workflowInfo().continueAsNewSuggested || workflowInfo().historyLength > 10_000
   }, 300);
   // A long Goal continues as a new run to bound workflow history.
-  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId });
+  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId, traceparent: input.traceparent });
   return { goalStatus: result.goalStatus ?? "UNKNOWN" };
 }
 

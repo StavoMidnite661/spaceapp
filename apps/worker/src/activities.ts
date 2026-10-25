@@ -455,27 +455,29 @@ export async function runRoomAgentBackgroundAction(input: {
 }
 
 /** Space Dots Goals: one bounded API call per workflow iteration; the API is the authority. */
-async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown>, fetchImpl: typeof fetch = fetch) {
-  const config = getCodexAppServerTurnActivityConfig();
-  if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
-  const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
-  });
+  async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown>, fetchImpl: typeof fetch = fetch) {
+    const config = getCodexAppServerTurnActivityConfig();
+    if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
+    const headers: Record<string, string> = { "content-type": "application/json", "x-space-internal-token": config.internalApiToken };
+    if (typeof body.traceparent === "string" && body.traceparent) headers.traceparent = body.traceparent as string;
+    const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
+      method: "POST", headers,
+      body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
+    });
   const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
   // Only a Goal that no longer exists ends its workflow; any other failure is retried.
   if (response.status === 404 && (parsed.error as { code?: unknown } | undefined)?.code === "DOT_GOAL_NOT_FOUND") return { missing: true as const, body: parsed };
   if (!response.ok) throw new Error(`Dot Goal ${path} returned HTTP ${response.status}.`);
   return { missing: false as const, body: parsed };
 }
-export async function dotGoalStep(goalId: string, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
-  const result = await dotGoalApi("step", { goalId }, fetchImpl);
+export async function dotGoalStep(input: { goalId: string; traceparent?: string | null }, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
+  const result = await dotGoalApi("step", { goalId: input.goalId, traceparent: input.traceparent }, fetchImpl);
   if (result.missing) return { state: "DONE", runId: null, goalStatus: "MISSING" };
   const goal = result.body.goal as { status?: string } | undefined;
   return { state: String(result.body.state), runId: typeof result.body.runId === "string" ? result.body.runId : null, goalStatus: goal?.status ?? "UNKNOWN" };
 }
-export async function dotGoalObserve(goalId: string, runId: string, fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
-  const result = await dotGoalApi("observe", { goalId, runId }, fetchImpl);
+export async function dotGoalObserve(input: { goalId: string; runId: string; traceparent?: string | null }, fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
+  const result = await dotGoalApi("observe", { goalId: input.goalId, runId: input.runId, traceparent: input.traceparent }, fetchImpl);
   if (result.missing) return { run: "MISSING", goalStatus: "MISSING" };
   return { run: String(result.body.run), goalStatus: (result.body.goal as { status?: string } | undefined)?.status ?? "UNKNOWN" };
 }
