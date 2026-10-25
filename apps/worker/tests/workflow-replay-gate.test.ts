@@ -31,6 +31,7 @@ function loadFixture(name: string): { workflowId: string; workflowType: string; 
   return { workflowId: String(raw.workflowId ?? `replay:${name}`), workflowType, history };
 }
 
+/** Replay every named fixture against the given workflows module path. */
 async function replayAll(workflowsPath: string, names: string[]): Promise<number> {
   const loaded = names.map((name) => ({ name, ref: loadFixture(name) }));
   const metaByWorkflowId = new Map(

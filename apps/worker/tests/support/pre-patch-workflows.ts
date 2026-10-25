@@ -59,6 +59,7 @@ const { markRoomAgentMissionStarted, markRoomAgentMissionFinished, markRoomAgent
     retry: { maximumAttempts: 5 }
   });
 
+/** Derive a Temporal failure code string from an error chain. */
 function supervisorFailureCode(error: unknown): string {
   let code = "ROOM_AGENT_SUPERVISOR_FAILED";
   let failure = error as { name?: unknown; type?: unknown; cause?: unknown } | undefined;
@@ -69,6 +70,7 @@ function supervisorFailureCode(error: unknown): string {
   return code;
 }
 
+/** Pre-patch supervisor: the legacy boolean/mark* contract for replaying legacy histories. */
 export async function roomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];

@@ -14,6 +14,7 @@ export function timeSkippingServerExecutable(): { type: "existing-path"; path: s
   return path ? { type: "existing-path", path } : undefined;
 }
 
+/** Create a time-skipping Temporal test environment for the sandbox suite. */
 export async function createTimeSkippingEnvironment(): Promise<TestWorkflowEnvironment> {
   const executable = timeSkippingServerExecutable();
   return TestWorkflowEnvironment.createTimeSkipping(
@@ -21,6 +22,7 @@ export async function createTimeSkippingEnvironment(): Promise<TestWorkflowEnvir
   );
 }
 
+/** Options for creating a sandbox worker in the test environment. */
 export interface SandboxWorkerOptions {
   taskQueue: string;
   workflowsPath: string;
@@ -46,6 +48,7 @@ export async function createSandboxWorker(
   return { worker, running: worker.run() };
 }
 
+/** Stop a sandbox worker and await its running promise. */
 export async function stopSandboxWorker(
   bundle: { worker: Worker; running: Promise<void> } | undefined
 ): Promise<void> {

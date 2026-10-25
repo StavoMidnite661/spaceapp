@@ -39,10 +39,12 @@ export class ActivityRecorder<T extends Record<string, unknown>> {
     this.queues.set(name, q);
   }
 
+  /** Return the number of times `name` has been called. */
   count(name: string): number {
     return this.calls.filter((c) => c.name === name).length;
   }
 
+  /** Return the captured argument arrays for every call to `name`. */
   argsOf(name: string): unknown[][] {
     return this.calls.filter((c) => c.name === name).map((c) => c.args);
   }
@@ -70,6 +72,7 @@ export class ActivityRecorder<T extends Record<string, unknown>> {
   private readonly defaults: Record<string, any>;
 }
 
+/** Sleep for `ms` milliseconds. */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -126,6 +129,7 @@ export async function historyEvents(handle: WorkflowHandle, runId?: string): Pro
   return events;
 }
 
+/** Decode a history payload data field into a UTF-8 string. */
 function decodePayloadData(data: unknown): string {
   if (typeof data === "string") return Buffer.from(data, "base64").toString("utf8");
   return Buffer.from(data as Uint8Array).toString("utf8");
@@ -194,6 +198,7 @@ export async function expectContinueAsNew(
   throw new Error("expected WorkflowContinuedAsNewError, but the run completed");
 }
 
+/** Parts used to build a schema-valid roomAgentSupervisorQueueItem. */
 export interface QueueItemParts {
   missionId: string;
   roomId: string;
@@ -241,4 +246,5 @@ export function turnResult(overrides: Record<string, unknown> = {}): AnyRecord {
   };
 }
 
+/** Reference to a recorded history fixture (workflowId + HistoryAndWorkflowId). */
 export interface FixtureRef extends HistoryAndWorkflowId {}
