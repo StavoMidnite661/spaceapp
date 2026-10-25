@@ -32,13 +32,21 @@ export interface DotGoalWorkflowCoordinator {
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string, traceId?: string | null, traceparent?: string | null): Promise<boolean>;
 }
+/**
+ * A Temporal-backed implementation of DotGoalWorkflowCoordinator.
+ *
+ * Starts, wakes, and ensures Dot Goal workflows on the Temporal cluster,
+ * carrying request trace context into workflow memo and signal payload.
+ */
 export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordinator {
   constructor(private readonly options: { address: string; namespace: string; taskQueue: string }) {}
+  /** Connect to Temporal and run an action with a fresh client. */
   private async client<T>(action: (client: Client) => Promise<T>): Promise<T> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
+  /** Start the dotGoalWorkflow for a goal, carrying trace context in memo and args. */
   start(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
       try {
@@ -48,12 +56,14 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
+  /** Wake a running dotGoalWorkflow by sending the DOT_GOAL_SIGNAL with trace context. */
   wake(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
       try { await client.workflow.getHandle(dotGoalWorkflowId(goalId)).signal(DOT_GOAL_SIGNAL, { traceId, traceparent }); }
       catch (error) { if (!(error instanceof WorkflowNotFoundError)) throw error; }
     });
   }
+  /** Ensure a dotGoalWorkflow exists for a goal; true when a new one was started. */
   ensure(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
       try {
@@ -68,10 +78,12 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     });
   }
 }
+/** Build a TemporalDotGoalWorkflowCoordinator when goals are enabled, else null. */
 export function createDotGoalWorkflowCoordinator(options: { enabled: boolean; address: string; namespace: string; taskQueue: string }): DotGoalWorkflowCoordinator | null {
   return options.enabled ? new TemporalDotGoalWorkflowCoordinator(options) : null;
 }
 
+/** Dependencies injected into the Dot Goal service layer. */
 export interface DotGoalServiceDeps {
   store: SpaceStore;
   dots: DotsRepository;
@@ -88,18 +100,22 @@ export interface DotGoalServiceDeps {
   supportsGoalTools(session: { selectedProviderId: string | null; permissionMode: string | null }): boolean;
   audit(request: FastifyRequest | null, action: string, roomId: string, metadata: Record<string, unknown>): Promise<void>;
 }
+/** Typed error returned by Dot Goal service operations. */
 export class DotGoalError extends Error {
   constructor(readonly status: 400 | 404 | 409 | 503, readonly code: string, message: string) { super(message); }
 }
 
+/** The observable state of a dot goal workflow step. */
 export type DotGoalStepState =
   | { state: "STARTED" | "BUSY"; runId: string; goal: DotGoal }
   | { state: "PAUSED" | "WAITING" | "DONE"; goal: DotGoal };
 
+/** Build an idempotent request key for a goal step number. */
 function requestKeyFor(goalId: string, step: number): string {
   return `goal-${createHash("sha256").update(`${goalId}:${step}`).digest("hex").slice(0, 40)}`;
 }
 
+/** Create the Dot Goal service: create, control, steer, step, observe, tool, reconcile. */
 export function createDotGoalService(deps: DotGoalServiceDeps) {
   async function activeSession(goal: DotGoal) {
     const session = await deps.store.getSpaceAgentSession(goal.sessionId);
@@ -109,6 +125,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return (await deps.goals.transition(goal.goalId, ["ACTIVE", "PAUSED"], status, reason)) ?? goal;
   }
 
+  /** Create a new Dot Goal and start its workflow with request trace context. */
   async function create(owner: string, dotId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const input = createDotGoalInputSchema.parse(raw);
     if (!deps.workflow) throw new DotGoalError(503, "DOT_GOALS_UNAVAILABLE", "Goals need the Space worker runtime.");
@@ -137,6 +154,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return goal;
   }
 
+  /** Pause, resume, or cancel a Dot Goal, forwarding trace context to its workflow. */
   async function control(owner: string, dotId: string, goalId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const { action } = dotGoalControlInputSchema.parse(raw);
     const goal = await deps.goals.getOwned(owner, dotId, goalId);
@@ -155,6 +173,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return next;
   }
 
+  /** Add steering (guidance text) to an open Dot Goal and wake its workflow. */
   async function steer(owner: string, dotId: string, goalId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const { text } = dotGoalSteerInputSchema.parse(raw);
     const goal = await deps.goals.getOwned(owner, dotId, goalId);
@@ -166,7 +185,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return next;
   }
 
-  /** One workflow iteration: start the next step, or report why not. Idempotent per step number. */
+  /** Run one workflow iteration: send the next step or report why not. Idempotent per step number. */
   async function step(goalId: string): Promise<DotGoalStepState> {
     let goal = await deps.goals.get(goalId);
     if (!goal) throw new DotGoalError(404, "DOT_GOAL_NOT_FOUND", "Goal was not found.");
@@ -210,7 +229,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return { state: "STARTED", runId, goal };
   }
 
-  /** Records a finished step once and returns whether the workflow should continue. */
+  /** Record a finished step result and return whether the workflow should continue. */
   async function observe(goalId: string, runId: string): Promise<{ run: string; goal: DotGoal }> {
     const goal = await deps.goals.get(goalId);
     if (!goal) throw new DotGoalError(404, "DOT_GOAL_NOT_FOUND", "Goal was not found.");
@@ -223,7 +242,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return { run: run.status, goal: updated };
   }
 
-  /** Goal tools for the Dot gateway; bound to the calling conversation's open Goal. */
+  /** Handle a Dot Goal tool call (status, update, complete, block) from the Dot gateway. */
   async function tool(sessionId: string, toolId: string, args: Record<string, unknown>): Promise<{ status: "COMPLETED" | "BLOCKED"; statusReason: string | null; result?: unknown }> {
     const goal = await deps.goals.openForSession(sessionId);
     if (!goal) return { status: "BLOCKED", statusReason: "This conversation has no open Goal." };
@@ -258,7 +277,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       default: return { status: "BLOCKED", statusReason: "Unknown Goal tool." };
     }
   }
-  /** Restarts the driver of any open Goal whose workflow has ended (crash, history limit, operator restart). */
+  /** Restart drivers of open Goals whose workflows have ended; returns the count restarted. */
   async function reconcile(limit = 50): Promise<number> {
     if (!deps.workflow?.ensure) return 0;
     let restarted = 0;
@@ -269,8 +288,10 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
   }
   return { create, control, steer, step, observe, tool, reconcile };
 }
+/** The Dot Goal service interface, inferred from createDotGoalService. */
 export type DotGoalService = ReturnType<typeof createDotGoalService>;
 
+/** Register Fastify routes for Dot Goal CRUD, control, steer, step, and observe. */
 export function registerDotGoalRoutes(app: FastifyInstance, service: DotGoalService | null, deps: { goals: DotGoalsRepository } | null, options: {
   routeOptions: RouteShorthandOptions;
   authenticatedOwner: (request: FastifyRequest) => Promise<string>;

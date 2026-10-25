@@ -304,11 +304,13 @@ function positiveIntegerEnvMs(value: string | undefined, fallback: number, maxMs
   return Number.isInteger(parsed) && parsed >= 5_000 && parsed <= effectiveMax ? parsed : fallback;
 }
 
+/** Record that a dummy turn started, returning its workflow id. */
 export async function recordDummyTurnStarted(input: DummyTurnInput): Promise<{ workflowId: string }> {
   const parsed = dummyTurnInputSchema.parse(input);
   return { workflowId: buildDummyTurnWorkflowId(parsed) };
 }
 
+/** Record that a dummy turn completed, returning its turn result. */
 export async function recordDummyTurnCompleted(input: DummyTurnInput): Promise<DummyTurnResult> {
   const parsed = dummyTurnInputSchema.parse(input);
   const result = dummyTurnResultSchema.parse({
@@ -470,12 +472,14 @@ export async function runRoomAgentBackgroundAction(input: {
   if (!response.ok) throw new Error(`Dot Goal ${path} returned HTTP ${response.status}.`);
   return { missing: false as const, body: parsed };
 }
+/** Call the Dot Goal step endpoint, forwarding traceparent in the request. */
 export async function dotGoalStep(input: { goalId: string; traceparent?: string | null }, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
   const result = await dotGoalApi("step", { goalId: input.goalId, traceparent: input.traceparent }, fetchImpl);
   if (result.missing) return { state: "DONE", runId: null, goalStatus: "MISSING" };
   const goal = result.body.goal as { status?: string } | undefined;
   return { state: String(result.body.state), runId: typeof result.body.runId === "string" ? result.body.runId : null, goalStatus: goal?.status ?? "UNKNOWN" };
 }
+/** Call the Dot Goal observe endpoint, forwarding traceparent in the request. */
 export async function dotGoalObserve(input: { goalId: string; runId: string; traceparent?: string | null }, fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
   const result = await dotGoalApi("observe", { goalId: input.goalId, runId: input.runId, traceparent: input.traceparent }, fetchImpl);
   if (result.missing) return { run: "MISSING", goalStatus: "MISSING" };

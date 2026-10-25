@@ -121,11 +121,13 @@ export const stopRoomAgentMissionSignal = defineSignal<[
   { missionId: string | null; reason: string }
 ]>(ROOM_AGENT_STOP_SIGNAL);
 
+/** Dummy turn workflow: record start then completion, returning the result. */
 export async function dummyTurnWorkflow(input: DummyTurnInput): Promise<DummyTurnResult> {
   await recordDummyTurnStarted(input);
   return recordDummyTurnCompleted(input);
 }
 
+/** Codex app server turn workflow: delegate to the configured agent turn activity. */
 export async function codexAppServerTurnWorkflow(input: DummyTurnInput): Promise<TurnWorkflowResult> {
   if (input.providerId === "opencode") {
     return openCodeAgentTurnActivities.runOpenCodeAgentTurn(input);
@@ -138,6 +140,7 @@ export async function codexAppServerTurnWorkflow(input: DummyTurnInput): Promise
     : roomAgentTurnActivities.runCodexAppServerTurn(input);
 }
 
+/** Room agent supervisor: legacy contract before the marker, continued contract after. */
 export async function roomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   // Keep the old activity/boolean contract for histories that predate this patch.
   if (!patched("room-background-continuation-v1")) return legacyRoomAgentSupervisorWorkflow(rawInput);
@@ -389,6 +392,7 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
   }
 }
 
+/** Room agent action: run a background action, reporting failure if it throws. */
 export async function roomAgentActionWorkflow(input: Parameters<typeof activities.runRoomAgentBackgroundAction>[0]) {
   try {
     return await roomAgentTurnActivities.runRoomAgentBackgroundAction(input);
