@@ -52,3 +52,6 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Dev stack state directory (git-ignored, per-developer local state)
+.dev-stack/

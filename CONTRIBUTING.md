@@ -50,6 +50,46 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+After `npm ci`, one command starts a complete SpaceApp from source with hot reload:
+
+```sh
+npm run dev:stack
+```
+
+This starts PostgreSQL (pgvector) and Temporal in Docker, runs database migrations,
+then starts the API (watch mode), Vite web dev server, Temporal worker, and CLI
+host from source. All services bind to `127.0.0.1` only.
+
+State lives in `.dev-stack/` (git-ignored), so an installed SpaceApp is never
+disturbed. Ports and directories can be overridden through environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SPACEAPP_DEV_API_PORT` | 4910 | API port |
+| `SPACEAPP_DEV_WEB_PORT` | 4911 | Web dev server port |
+| `SPACEAPP_DEV_POSTGRES_PORT` | 5432 | PostgreSQL port |
+| `SPACEAPP_DEV_TEMPORAL_PORT` | 7233 | Temporal port |
+| `SPACEAPP_DEV_BIND_HOST` | 127.0.0.1 | Bind host for all services |
+| `SPACEAPP_DEV_STATE_DIR` | `.dev-stack` | State directory |
+
+When the API `/readyz` endpoint reports ok, the command prints the URL and a
+one-time owner setup token. Open the URL, create the owner, then start an
+OpenCode pane through the Getting Started room.
+
+Hot reload: a change in `apps/api/src` restarts the API, a change in
+`apps/web/src` hot-reloads in the browser, and a change in `packages/*` is
+rebuilt and picked up by the watching processes.
+
+```sh
+npm run dev:stack -- down    # stop all services
+npm run dev:stack -- reset   # stop and remove the state directory
+```
+
+Docker is required for PostgreSQL and Temporal. Linux is the reference
+development environment; Windows contributors can use WSL.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
