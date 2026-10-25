@@ -35,6 +35,7 @@ import {
   removeUser,
   removeWorkspace,
   resolveInstallAccessMode,
+  resolveInstallEngine,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
@@ -49,7 +50,7 @@ import {
 } from "./index.mjs";
 import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
-  ensureDockerAvailable,
+  ensureEngineAvailable,
   prepareDockerCliPath,
   windowsPowerShellArgs
 } from "./prerequisites.mjs";
@@ -78,6 +79,7 @@ const trustedCommands = new Set([
   "docker",
   "hdiutil",
   "open",
+  "podman",
   "powershell.exe",
   "sg",
   "shutdown.exe",
@@ -273,7 +275,7 @@ export async function run(argv, {
   stdin = process.stdin,
   execute = executeCommand,
   inspectResources = inspectSystemResources,
-  ensureDocker = ensureDockerAvailable,
+  ensureEngine = ensureEngineAvailable,
   prepareDockerPath = prepareDockerCliPath,
   request = globalThis.fetch,
   sleep = wait,
@@ -378,7 +380,7 @@ export async function run(argv, {
       stderr,
       execute,
       inspectResources,
-      ensureDocker,
+      ensureEngine,
       prepareDockerPath,
       request,
       sleep,
@@ -408,11 +410,11 @@ export async function run(argv, {
 
   if (command === "doctor" && !args.includes("--fix")) {
     assertNoArgs(args, "doctor");
-    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, engine: "docker" });
   }
   if (command === "repair" || command === "doctor" && args.includes("--fix")) {
     if (args.some((arg) => !["--dry-run", "--fix"].includes(arg))) throw new Error("Usage: repair [--dry-run] or doctor --fix");
-    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
+    return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureEngine, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
   const config = await loadConfig(root);
   if (commandNeedsRuntimeFiles(command, args)) {
@@ -440,7 +442,7 @@ export async function run(argv, {
   }
   if (command === "doctor") {
     assertNoArgs(args, "doctor");
-    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources });
+    return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, engine: "docker" });
   }
   if (command === "support-bundle") {
     let outPath = null;
@@ -489,7 +491,7 @@ export async function run(argv, {
       execute: runtimeExecute,
       request,
       sleep,
-      inspectResources, ensureDocker, env, arch
+      inspectResources, ensureEngine, env, arch
     });
   }
   if (command === "rollback") {
@@ -631,7 +633,7 @@ async function installCommand(args, {
   stderr,
   execute,
   inspectResources,
-  ensureDocker,
+  ensureEngine,
   prepareDockerPath,
   request,
   sleep,
@@ -646,7 +648,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    inspectResources, request, sleep, ensureDocker, env, arch
+    inspectResources, request, sleep, ensureEngine, env, arch
   });
   if (wizard.exit !== undefined) {
     return wizard.exit;
@@ -654,6 +656,7 @@ async function installCommand(args, {
   const {
     requestedProfile,
     requestedAccessMode,
+    requestedEngine,
     noOpen,
     companionsEnabled,
     telemetryEnabled,
@@ -672,6 +675,13 @@ async function installCommand(args, {
       "Host-root access is disabled for this launcher-only candidate because its runtime images were not rebuilt. Use --access isolated."
     );
   }
+  const engine = resolveInstallEngine(
+    requestedEngine,
+    existingConfig?.engine ?? "docker"
+  );
+  if (engine === "podman" && accessMode === "host-root") {
+    throw new Error("Host-root access is not supported with Podman. Use --access isolated.");
+  }
   await prepareDockerPath({ platform, env });
   const resources = await inspectResources(root);
   let profile = requestedProfile === "auto" && existingConfig
@@ -684,6 +694,7 @@ async function installCommand(args, {
   const result = await prepareInstallation(root, {
     version: runtimeVersion,
     profile,
+    engine,
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
   });
@@ -696,7 +707,7 @@ async function installCommand(args, {
   // reports completed or failed (interrupted, or an error outside these steps) stays "started".
   const reportFunnel = existingConfig || !result.config.installId ? null : createInstallFunnel({
     installId: result.config.installId, platform, arch, launcherVersion, runtimeVersion, request,
-    facts: installFunnelFacts({ platform, resources, profile, accessMode })
+    facts: installFunnelFacts({ platform, resources, profile, accessMode, engine })
   });
   void reportFunnel?.("install_started");
   let stage = "resources";
@@ -714,6 +725,9 @@ async function installCommand(args, {
   );
   stdout.write(
     `Access: ${existingConfig?.accessMode ?? "not configured"} -> ${result.config.accessMode}\n`
+  );
+  stdout.write(
+    `Engine: ${existingConfig?.engine ?? "not configured"} -> ${result.config.engine}\n`
   );
   stdout.write(existingConfig
     ? "Preserved existing data, workspaces, credentials, secrets, and persistent Docker volumes.\n"
@@ -733,7 +747,7 @@ async function installCommand(args, {
       stdin,
       inspectResources,
       resources,
-      profile, operation
+      profile, operation, engine: result.config.engine
     });
     stderr.write(
       `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
@@ -742,7 +756,8 @@ async function installCommand(args, {
   }
 
   stage = "docker";
-  const prerequisiteResult = await ensureDocker({
+  const prerequisiteResult = await ensureEngineAvailable({
+    engine,
     platform,
     arch,
     env,
@@ -750,7 +765,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
-    installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
+    installArgs: { root, requestedProfile, requestedAccessMode, requestedEngine, noOpen, autoConfirm: true }
   });
   if (prerequisiteResult.reexecuted) {
     return prerequisiteResult.code;
@@ -784,7 +799,8 @@ async function installCommand(args, {
     inspectResources,
     resources,
     profile,
-    dockerReady: true, operation, storagePlan
+    engine: result.config.engine,
+    engineReady: true, operation, storagePlan
   });
   if (doctorCode !== 0) {
     stderr.write(
@@ -1046,7 +1062,7 @@ async function planInteractiveSetup({
   stderr,
   execute,
   inspectResources,
-  request, sleep, ensureDocker, env, arch
+  request, sleep, ensureEngine, env, arch
 }) {
   const parsed = parseInstallArgs(args);
   const rawExisting = await readRawConfig(root);
@@ -1162,11 +1178,11 @@ async function planInteractiveSetup({
       return { exit: 0 };
     }
     if (choice === "doctor") {
-      return { exit: await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources }) };
+      return { exit: await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources, engine: "docker" }) };
     }
     await applyApprovedConfigRepairs(root, rawExisting);
     const config = await loadExistingInstallation(root);
-    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources });
+    const code = await repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, ensureEngine, env, arch, inspectResources });
     if(code === 0 && !parsed.noOpen) await openBrowser(`http://${config.bindHost}:${config.port}`, platform, execute, {stdin,stdout,stderr});
     return {exit:code};
   }
@@ -1280,7 +1296,7 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
-async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
+async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureEngine = ensureEngineAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
   const raw = await readRawConfig(root);
   const plan = planConfigRepairs(raw);
   if (dryRun) {
@@ -1293,8 +1309,8 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     "Repair configuration and recreate the current runtime without deleting data.",
     ...plan.actions.map((action) => action.detail)
   ])) return 1;
-  const prerequisites = await ensureDocker({platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
-    installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
+  const prerequisites = await ensureEngine({ engine: config.engine, platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
+    installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,requestedEngine:repaired.engine,noOpen:true,autoConfirm:true}});
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   config = repaired;
   if (await verifyStorage({ root, config, existingConfig: config, operation: "repair", inspectResources, execute, stdout, stderr }) !== 0) return 1;
@@ -2264,7 +2280,7 @@ async function factoryResetCommand({
   return 0;
 }
 
-async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources = inspectSystemResources, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch }) {
+async function updateCommand(args, { root, config, version, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources = inspectSystemResources, ensureEngine = ensureEngineAvailable, env = process.env, arch = process.arch }) {
   if (args.length > 1) {
     throw new Error(`Usage: ${UNIVERSAL_COMMAND} update [version]`);
   }
@@ -2295,10 +2311,10 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
         return 0;
       }
       if (choice === "doctor") {
-        return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources });
+        return doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources: inspectSystemResources, engine: "docker" });
       }
     }
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources, ensureDocker, env, arch });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, inspectResources, ensureEngine, env, arch });
   }
   if (path === "downgrade") {
     if (!continuation) {
@@ -2337,13 +2353,13 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
       return 0;
     }
   }
-  const prerequisites = await ensureDocker({ platform, arch, env, stdin, stdout, stderr, execute,
-    installArgs: { root, requestedProfile: config.profile, noOpen: true, autoConfirm: true } });
+  const prerequisites = await ensureEngineAvailable({ engine: config.engine, platform, arch, env, stdin, stdout, stderr, execute,
+    installArgs: { root, requestedProfile: config.profile, requestedEngine: config.engine, noOpen: true, autoConfirm: true } });
   if (prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   const resources = await inspectResources(root);
   const storagePlan = await inspectStoragePlan({ root, config: { ...config, version: targetVersion }, existingConfig: config, resources, execute, operation: "upgrade" });
   if (await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources,
-    profile: config.profile, dockerReady: true, operation: "upgrade", storagePlan }) !== 0) return 1;
+    profile: config.profile, engine: config.engine, engineReady: true, operation: "upgrade", storagePlan }) !== 0) return 1;
   return performUpdate({
     root,
     config,
@@ -2384,7 +2400,8 @@ async function doctor({
   profile,
   operation,
   storagePlan,
-  dockerReady = false
+  engine = "docker",
+  engineReady = false
 }) {
   const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
   const detectedResources = resources ?? await inspectResources(root);
@@ -2401,7 +2418,7 @@ async function doctor({
   }
   operation ??= await loadConfig(root).then(() => "maintenance").catch(() => "fresh");
   const resourceChecks = installResourceChecks(storagePlan?.resources ?? detectedResources, resolvedProfile, {
-    operation, ...(storagePlan ? { requiredDiskBytes: storagePlan.requiredDiskBytes } : {})
+    operation, ...(storagePlan ? { requiredDiskBytes: storagePlan.requiredDiskBytes } : {}), engine
   });
   const checks = [
     { name: "Node.js", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
@@ -2409,51 +2426,52 @@ async function doctor({
     ...resourceChecks.filter((check) => !storagePlan || check.name !== "Free disk"),
     ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
-  const dockerResults = [];
+  const engineName = engine.charAt(0).toUpperCase() + engine.slice(1);
+  const engineResults = [];
   for (const probe of [
-    { name: "Docker CLI", command: "docker", args: ["--version"] },
-    { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
-    { name: "Docker Engine", command: "docker", args: ["info"] }
+    { name: `${engineName} CLI`, command: engine, args: ["--version"] },
+    { name: `${engineName} Compose`, command: engine === "docker" ? "docker" : "podman", args: [engine === "docker" ? "compose" : "compose", "version"] },
+    { name: `${engineName} Engine`, command: engine, args: ["info"] }
   ]) {
-    const code = dockerReady
+    const code = engineReady
       ? 0
       : await execute(probe, { stdin, stdout: null, stderr: null });
-    dockerResults.push({ ...probe, code });
+    engineResults.push({ ...probe, code });
   }
-  const [dockerCli, dockerCompose, dockerEngine] = dockerResults;
+  const [engineCli, engineCompose, engineEngine] = engineResults;
   checks.push({
-    name: dockerCli.name,
-    ok: dockerCli.code === 0,
-    detail: dockerCli.code === 0
+    name: engineCli.name,
+    ok: engineCli.code === 0,
+    detail: engineCli.code === 0
       ? "available"
-      : dockerCli.code === 127
+      : engineCli.code === 127
         ? "not found on PATH"
-        : `unavailable (exit ${dockerCli.code})`
+        : `unavailable (exit ${engineCli.code})`
   });
   checks.push({
-    name: dockerCompose.name,
-    ok: dockerCompose.code === 0,
-    detail: dockerCompose.code === 0
+    name: engineCompose.name,
+    ok: engineCompose.code === 0,
+    detail: engineCompose.code === 0
       ? "available"
-      : dockerCli.code !== 0
-        ? "not available because Docker CLI is missing"
-        : `plugin unavailable (exit ${dockerCompose.code})`
+      : engineCli.code !== 0
+        ? "not available because CLI is missing"
+        : `plugin unavailable (exit ${engineCompose.code})`
   });
   checks.push({
-    name: dockerEngine.name,
-    ok: dockerEngine.code === 0,
-    detail: dockerEngine.code === 0
+    name: engineEngine.name,
+    ok: engineEngine.code === 0,
+    detail: engineEngine.code === 0
       ? "available"
-      : dockerCli.code === 0
+      : engineCli.code === 0
         ? "installed but not running or inaccessible"
-        : "not reachable because Docker CLI is missing"
+        : "not reachable because CLI is missing"
   });
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   }
-  if (dockerCli.code !== 0 || dockerCompose.code !== 0) {
+  if (engineCli.code !== 0 || engineCompose.code !== 0) {
     stderr.write(`${dockerInstallHelp(platform)}\n`);
-  } else if (dockerEngine.code !== 0) {
+  } else if (engineEngine.code !== 0) {
     stderr.write(`${dockerEngineHelp(platform)}\n`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;

@@ -95,16 +95,16 @@ async function installedImageDigests(root, version) {
   return digests;
 }
 
-export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch }) {
-  const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
-  let engine = null;
-  try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
+export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, engine = "docker", fetch = globalThis.fetch }) {
+  const dockerInfo = await captureProbe(execute, { command: engine, args: ["info", "--format", "{{json .}}"] });
+  let engineInfo = null;
+  try { engineInfo = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
   const cachedLayers = new Set();
-  if (engine && existingConfig) {
+  if (engineInfo && existingConfig) {
     const existingDigests = await installedImageDigests(root, existingConfig.version);
     for (const type of ["core", "cli", "browser"]) {
       for (const ref of localImageRefs(type, existingConfig.version, existingDigests[type])) {
-        const output = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
+        const output = await captureProbe(execute, { command: engine, args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
         try { for (const layer of JSON.parse(output)) cachedLayers.add(layer); break; } catch {}
       }
     }
@@ -126,7 +126,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const refs = ["core", "cli", "browser"].includes(type) ? localImageRefs(type, config.version) : [image];
     let cached = null;
     for (const ref of refs) {
-      cached = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{.Id}}", ref] });
+      cached = await captureProbe(execute, { command: engine, args: ["image", "inspect", "--format", "{{.Id}}", ref] });
       if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
     }
     if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
@@ -134,7 +134,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
       let reserve = imageReserve[type] ?? GiB;
       if (engine && existingConfig && cachedLayers.size && typeof fetch === "function") {
         try {
-          const metadata = await registryLayers(image, /arm|aarch64/.test(engine.Architecture ?? "") ? "arm64" : "amd64", fetch);
+          const metadata = await registryLayers(image, /arm|aarch64/.test(engineInfo?.Architecture ?? "") ? "arm64" : "amd64", fetch);
           if (metadata) { reserve = estimateMissingLayers(metadata.layers, metadata.diffIds, cachedLayers); sharedLayersEstimated = true; }
         } catch { /* Offline/private registry: retain the full conservative reserve. */ }
       }
@@ -157,13 +157,13 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   // Linux can measure the Docker filesystem directly even on a fresh install.
   if (engine?.DockerRootDir && process.platform === "linux") {
     const { inspectSystemResources } = await import("./index.mjs");
-    try { dockerFreeDiskBytes = (await inspectSystemResources(engine.DockerRootDir)).freeDiskBytes; } catch {}
+    try { dockerFreeDiskBytes = (await inspectSystemResources(engineInfo?.DockerRootDir)).freeDiskBytes; } catch {}
   }
   return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
     resources: { ...resources,
       freeDiskBytes: dockerFreeDiskBytes === null ? resources.freeDiskBytes : Math.min(resources.freeDiskBytes, dockerFreeDiskBytes),
-      engineCpuCount: engine?.NCPU,
-      engineMemoryBytes: engine?.MemTotal
+      engineCpuCount: engineInfo?.NCPU,
+      engineMemoryBytes: engineInfo?.MemTotal
     } };
 }
 

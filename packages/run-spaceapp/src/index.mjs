@@ -124,6 +124,7 @@ const CONFIG_KEYS = new Set([
   "port",
   "telemetry",
   "profile",
+  "engine",
   "accessMode",
   "workspaces",
   "companionsEnabled",
@@ -192,6 +193,16 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
     return requestedMode;
   }
   throw new Error("Install access mode must be isolated or host-root.");
+}
+
+export function resolveInstallEngine(requestedEngine, existingEngine = "docker") {
+  if (requestedEngine === undefined) {
+    return existingEngine;
+  }
+  if (requestedEngine === "docker" || requestedEngine === "podman") {
+    return requestedEngine;
+  }
+  throw new Error("Container engine must be docker or podman.");
 }
 
 export function versionTuple(version) {
@@ -270,7 +281,7 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
+export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh", engine = "docker" } = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
@@ -297,9 +308,9 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${engine.charAt(0).toUpperCase() + engine.slice(1)} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
       detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
+    ...(resources.engineCpuCount > 0 ? [{ name: `${engine.charAt(0).toUpperCase() + engine.slice(1)} CPU`, ok: resources.engineCpuCount >= 4,
       detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
   ];
 }
@@ -307,6 +318,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
 export function createDefaultConfig({
   version,
   profile = "light",
+  engine = "docker",
   accessMode = "isolated",
   companionsEnabled = false
 }) {
@@ -314,6 +326,7 @@ export function createDefaultConfig({
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
+  const resolvedEngine = resolveInstallEngine(engine);
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -323,6 +336,7 @@ export function createDefaultConfig({
     port: 4911,
     telemetry: false,
     profile,
+    engine: resolvedEngine,
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
@@ -360,6 +374,12 @@ export function validateConfig(config) {
   }
   if (!INSTALL_PROFILES.includes(config.profile)) {
     throw new Error("profile must be small, medium, large, light, or standard.");
+  }
+  if (config.engine === undefined) {
+    config.engine = "docker";
+  }
+  if (config.engine !== "docker" && config.engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
@@ -787,8 +807,9 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
+  const engine = options.engine ?? "docker";
   const base = [
-    "compose",
+    ...(engine === "podman" ? ["podman", "compose"] : ["docker", "compose"]),
     "--project-name", composeProjectName(root),
     "--project-directory", root,
     "--env-file", join(stateRoot, "runtime.env"),
@@ -905,7 +926,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: base[0], args: base.slice(1).concat(selected) };
 }
 
 export function composeProjectName(root) {
@@ -955,6 +976,7 @@ export async function writeRuntimeFiles(root, config) {
 export async function prepareInstallation(root, {
   version,
   profile,
+  engine,
   accessMode,
   companionsEnabled
 }) {
@@ -978,6 +1000,7 @@ export async function prepareInstallation(root, {
     config = createDefaultConfig({
       version,
       profile: resolvedProfile ?? "light",
+      engine,
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled
     });
@@ -995,6 +1018,10 @@ export async function prepareInstallation(root, {
   const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
   if (config.accessMode !== resolvedAccessMode) {
     config = { ...config, accessMode: resolvedAccessMode };
+  }
+  const resolvedEngine = resolveInstallEngine(engine, config.engine);
+  if (config.engine !== resolvedEngine) {
+    config = { ...config, engine: resolvedEngine };
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };

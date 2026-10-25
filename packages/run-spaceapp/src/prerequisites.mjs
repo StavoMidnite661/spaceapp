@@ -23,6 +23,7 @@ const MAC_DOCKER_DOWNLOADS = Object.freeze({
 });
 const MAC_ADMIN_PASSWORD_PROMPT =
   "SpaceApp Mac administrator password (input hidden): ";
+
 // Sources:
 // https://learn.microsoft.com/windows/package-manager/winget/install
 // https://github.com/microsoft/winget-pkgs/tree/master/manifests/d/Docker/DockerDesktop
@@ -37,6 +38,24 @@ const WINDOWS_DOCKER_WINGET_ARGS = Object.freeze([
   "--disable-interactivity"
 ]);
 
+// Sources:
+// https://github.com/containers/podman/releases
+// https://github.com/microsoft/winget-pkgs/tree/master/manifests/p/Podman.Podman
+const WINDOWS_PODMAN_WINGET_ARGS = Object.freeze([
+  "install",
+  "--id", "Podman.Podman",
+  "--exact",
+  "--source", "winget",
+  "--silent",
+  "--accept-package-agreements",
+  "--accept-source-agreements",
+  "--disable-interactivity"
+]);
+
+const MAC_PODMAN_DOWNLOADS = Object.freeze({
+  x64: "https://github.com/containers/podman/releases/download/v5.3.1/podman-5.3.1.darwin.amd64.tar.gz",
+  arm64: "https://github.com/containers/podman/releases/download/v5.3.1/podman-5.3.1.darwin.arm64.tar.gz"
+});
 export function windowsPowerShellArgs(operation) {
   const scripts = {
     "install-wsl": [
@@ -119,6 +138,59 @@ export async function prepareDockerCliPath({
   return directory;
 }
 
+export async function ensureEngineAvailable({
+  engine = "docker",
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  launch = launchDetachedCommand,
+  download = downloadFile,
+  pathExists = fileExists,
+  osRelease,
+  installArgs,
+  scheduleResume = scheduleWindowsInstallResume,
+  confirmRestart = confirmWindowsRestart
+}) {
+  if (engine === "podman") {
+    return ensurePodmanAvailable({
+      platform,
+      arch,
+      env,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      launch,
+      download,
+      pathExists,
+      osRelease,
+      installArgs,
+      scheduleResume,
+      confirmRestart
+    });
+  }
+  return ensureDockerAvailable({
+    platform,
+    arch,
+    env,
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    launch,
+    download,
+    pathExists,
+    osRelease,
+    installArgs,
+    scheduleResume,
+    confirmRestart
+  });
+}
+
 export async function ensureDockerAvailable({
   platform = process.platform,
   arch = process.arch,
@@ -183,6 +255,320 @@ export async function ensureDockerAvailable({
     osRelease,
     installArgs
   });
+}
+
+async function ensurePodmanAvailable({
+  engine,
+  platform,
+  arch,
+  env,
+  stdin,
+  stdout,
+  stderr,
+  execute,
+  launch,
+  download,
+  pathExists,
+  sleep,
+  osRelease,
+  installArgs,
+  scheduleResume,
+  confirmRestart
+}) {
+  if (await podmanIsReady(execute)) {
+    return { code: 0, reexecuted: false };
+  }
+  if (platform === "win32") {
+    return ensureWindowsPodman({ arch, env, stdin, stdout, stderr, execute, launch, download, pathExists, sleep, installArgs });
+  }
+  if (platform === "darwin") {
+    return ensureMacPodman({ arch, env, stdin, stdout, stderr, execute, launch, download, pathExists, sleep });
+  }
+  return ensureLinuxPodman({ arch, env, stdin, stdout, stderr, execute, download, sleep, osRelease, installArgs });
+}
+
+async function ensureWindowsPodman({ arch, env, stdin, stdout, stderr, execute, launch, download, pathExists, sleep, installArgs }) {
+  let application = await firstExisting(windowsPodmanPaths(env).applications, pathExists);
+  if (!application) {
+    stdout.write("Podman is required and is not installed.\n");
+    const accepted = await confirmDesktopInstall({ platformName: "Windows", stdin, stdout, autoConfirm: Boolean(installArgs?.autoConfirm) });
+    if (!accepted) {
+      stderr.write("Podman installation was cancelled.\n");
+      return { code: 1, reexecuted: false };
+    }
+    const wingetCode = await execute({ command: "winget.exe", args: ["--version"] }, { stdin, stdout: null, stderr: null });
+    if (wingetCode === 0) {
+      stdout.write("Installing Podman through Windows Package Manager...\n");
+      const installCode = await execute({ command: "winget.exe", args: [...WINDOWS_PODMAN_WINGET_ARGS] }, { stdin, stdout, stderr });
+      if (installCode === 0) {
+        application = await firstExisting(windowsPodmanPaths(env).applications, pathExists);
+        if (!application) {
+          stderr.write("Windows Package Manager reported success, but Podman could not be found.\n");
+          return { code: 1, reexecuted: false };
+        }
+      } else {
+        stdout.write("Windows Package Manager could not install Podman; trying direct download...\n");
+      }
+    }
+    if (!application) {
+      const downloadUrl = WINDOWS_PODMAN_DOWNLOADS[arch];
+      if (!downloadUrl) {
+        stderr.write(`Podman automatic installation does not support Windows architecture "${arch}".\n`);
+        return { code: 1, reexecuted: false };
+      }
+      const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-podman-"));
+      const installer = join(temporaryRoot, "podman-setup.exe");
+      try {
+        stdout.write("Downloading Podman from its official distribution service...\n");
+        await download(downloadUrl, installer);
+        const installCode = await execute({ command: installer, args: ["/install", "--quiet"] }, { stdin, stdout, stderr });
+        if (installCode !== 0) {
+          stderr.write("Podman installation failed.\n");
+          return { code: installCode, reexecuted: false };
+        }
+      } finally {
+        await rm(temporaryRoot, { recursive: true, force: true });
+      }
+      application = await firstExisting(windowsPodmanPaths(env).applications, pathExists);
+    }
+  } else {
+    stdout.write("Podman is installed but is not running. Starting it now...\n");
+  }
+  await preparePodmanCliPath({ platform: "win32", env, pathExists });
+  if (await waitForPodman({ execute, sleep, attempts: 300 })) {
+    stdout.write("Podman is ready.\n");
+    return { code: 0, reexecuted: false };
+  }
+  stderr.write("Podman did not become ready after 10 minutes. Start Podman Desktop and complete its first-run setup, then run the install command again.\n");
+  return { code: 1, reexecuted: false };
+}
+
+async function ensureMacPodman({ arch, env, stdin, stdout, stderr, execute, launch, download, pathExists, sleep }) {
+  const application = "/Applications/Podman.app";
+  let installed = await pathExists(application);
+  if (!installed) {
+    stdout.write("Podman Desktop is required and is not installed.\n");
+    const accepted = await confirmDesktopInstall({ platformName: "macOS", stdin, stdout, autoConfirm: false });
+    if (!accepted) {
+      stderr.write("Podman Desktop installation was cancelled.\n");
+      return { code: 1, reexecuted: false };
+    }
+    const downloadUrl = MAC_PODMAN_DOWNLOADS[arch];
+    if (!downloadUrl) {
+      stderr.write(`Podman automatic installation does not support macOS architecture "${arch}".\n`);
+      return { code: 1, reexecuted: false };
+    }
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-podman-"));
+    const diskImage = join(temporaryRoot, "Podman.dmg");
+    const mountedApplication = "/Volumes/Podman/Podman.app";
+    let mounted = false;
+    try {
+      stdout.write("Downloading Podman Desktop from its official distribution service...\n");
+      await download(downloadUrl, diskImage);
+      const attachCode = await execute({ command: "hdiutil", args: ["attach", "-nobrowse", diskImage] }, { stdin, stdout, stderr });
+      if (attachCode !== 0) {
+        return { code: attachCode, reexecuted: false };
+      }
+      mounted = true;
+      const installCode = await execute({ command: "sudo", args: ["-p", MAC_ADMIN_PASSWORD_PROMPT, "installer", "-pkg", joinedPackagePath(mountedApplication), "-target", "/"] }, { stdin, stdout, stderr });
+      if (installCode !== 0) {
+        stderr.write("macOS authorization failed. Podman Desktop must be installed by a Mac administrator account.\n");
+        return { code: installCode, reexecuted: false };
+      }
+    } finally {
+      if (mounted) {
+        await execute({ command: "hdiutil", args: ["detach", "/Volumes/Podman"] }, { stdin, stdout: null, stderr: null });
+      }
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+    installed = await pathExists(application);
+    if (!installed) {
+      stderr.write("Podman Desktop reported success, but /Applications/Podman.app could not be found.\n");
+      return { code: 1, reexecuted: false };
+    }
+  } else {
+    stdout.write("Podman Desktop is installed but is not running. Starting it now...\n");
+  }
+  await preparePodmanCliPath({ platform: "darwin", env, pathExists });
+  const launchCode = await launch({ operation: "open-podman-desktop" });
+  if (launchCode !== 0) {
+    stderr.write("Podman Desktop is installed, but SpaceApp could not start it.\n");
+    return { code: launchCode, reexecuted: false };
+  }
+  if (await waitForPodman({ execute, sleep, attempts: 300 })) {
+    stdout.write("Podman is ready.\n");
+    return { code: 0, reexecuted: false };
+  }
+  stderr.write("Podman Desktop did not become ready after 10 minutes. Complete any Podman Desktop prompt, then run the install command again.\n");
+  return { code: 1, reexecuted: false };
+}
+
+async function ensureLinuxPodman({ arch, env, stdin, stdout, stderr, execute, download, sleep, osRelease, installArgs }) {
+  const cliAvailable = await podmanCliAndComposeAreAvailable(execute);
+  if (!cliAvailable) {
+    const release = osRelease ?? await readLinuxOsRelease();
+    stdout.write(`Podman is required and is not installed. Installing it for ${release.ID}...\n`);
+    const installCode = await installLinuxPodman({ arch, release, stdin, stdout, stderr, execute, download });
+    if (installCode !== 0) {
+      return { code: installCode, reexecuted: false };
+    }
+  } else {
+    stdout.write("Podman is installed but is not ready. Starting it now...\n");
+  }
+  const startCode = await execute({ command: "sudo", args: ["systemctl", "enable", "--now", "podman"] }, { stdin, stdout, stderr });
+  if (startCode !== 0) {
+    stderr.write("Podman was installed, but its system service could not be started.\n");
+    return { code: startCode, reexecuted: false };
+  }
+  if (await waitForPodman({ execute, sleep, attempts: 15 })) {
+    stdout.write("Podman is ready.\n");
+    return { code: 0, reexecuted: false };
+  }
+  const username = String(env.SUDO_USER || env.USER || "");
+  if (!/^[A-Za-z0-9._-]+$/.test(username) || username === "root") {
+    stderr.write("A valid non-root Linux username is required for Podman access.\n");
+    return { code: 1, reexecuted: false };
+  }
+  stdout.write("Adding the current user to the podman group automatically and continuing.\n");
+  const groupCode = await execute({ command: "sudo", args: ["usermod", "-aG", "podman", username] }, { stdin, stdout, stderr });
+  if (groupCode !== 0) {
+    stderr.write(`SpaceApp could not add ${username} to the podman group.\n`);
+    return { code: groupCode, reexecuted: false };
+  }
+  const reentryCommand = linuxReentryCommand(installArgs);
+  stdout.write("Podman is ready. Continuing SpaceApp installation with the new group membership...\n");
+  const reentryCode = await execute({ command: "sg", args: ["podman", "-c", reentryCommand] }, { stdin, stdout, stderr });
+  return { code: reentryCode, reexecuted: true };
+}
+
+async function installLinuxPodman({ arch, release, stdin, stdout, stderr, execute, download }) {
+  const id = String(release?.ID || "").toLowerCase();
+  const idFamily = new Set([id, ...String(release?.ID_LIKE || "").toLowerCase().split(/\s+/).filter(Boolean)]);
+  if (id === "ubuntu" || id === "debian") {
+    return installAptPodman({ arch, id, codename: release.VERSION_CODENAME || release.UBUNTU_CODENAME, stdin, stdout, stderr, execute, download });
+  }
+  if (id === "fedora" || id === "rhel" || id === "centos") {
+    return installDnfPodman({ id, stdin, stdout, stderr, execute, download });
+  }
+  if (idFamily.has("arch") || idFamily.has("archlinux") || idFamily.has("cachyos")) {
+    return execute({ command: "sudo", args: ["pacman", "-S", "--needed", "--noconfirm", "podman", "podman-compose"] }, { stdin, stdout, stderr });
+  }
+  stderr.write(`Automatic Podman installation is not yet supported for Linux distribution "${id || "unknown"}". Install Podman and podman-compose from https://podman.io/docs/installation and rerun the same command.\n`);
+  return 1;
+}
+
+async function installAptPodman({ arch, id, codename, stdin, stdout, stderr, execute, download }) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-podman-"));
+  const signingKey = join(temporaryRoot, "podman.asc");
+  const repositoryFile = join(temporaryRoot, "podman.list");
+  const repositoryBase = `https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/${id}`;
+  try {
+    await download(`${repositoryBase}/Release.key`, signingKey);
+    await writeFile(repositoryFile, `deb [arch=amd64 signed-by=/etc/apt/keyrings/podman.asc] ${repositoryBase}/ /`, { mode: 0o600, flag: "wx" });
+    for (const spec of [
+      { command: "sudo", args: ["install", "-m", "0755", "-d", "/etc/apt/keyrings"] },
+      { command: "sudo", args: ["install", "-m", "0644", signingKey, "/etc/apt/keyrings/podman.asc"] },
+      { command: "sudo", args: ["install", "-m", "0644", repositoryFile, "/etc/apt/sources.list.d/podman.list"] },
+      { command: "sudo", args: ["apt-get", "update"] },
+      { command: "sudo", args: ["apt-get", "install", "-y", "podman", "podman-compose"] }
+    ]) {
+      const code = await execute(spec, { stdin, stdout, stderr });
+      if (code !== 0) return code;
+    }
+    return 0;
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+async function installDnfPodman({ id, stdin, stdout, stderr, execute, download }) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "spaceapp-podman-"));
+  try {
+    await download(`https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/${id}/repodata/repomd.xml.asc`, join(temporaryRoot, "podman.asc"));
+    await writeFile(join(temporaryRoot, "podman.repo"), `[podman]\nname=Podman\nbaseurl=https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/${id}/\nenabled=1\ngpgcheck=1\ngpgkey=file://${join(temporaryRoot, "podman.asc")}\n`, { mode: 0o600, flag: "wx" });
+    for (const args of [
+      ["install", "-D", "-m", "0644", join(temporaryRoot, "podman.asc"), "/etc/pki/rpm-gpg/spaceapp-podman.asc"],
+      ["rpm", "--import", "/etc/pki/rpm-gpg/spaceapp-podman.asc"],
+      ["install", "-D", "-m", "0644", join(temporaryRoot, "podman.repo"), "/etc/yum.repos.d/podman.repo"]
+    ]) {
+      const code = await execute({ command: "sudo", args }, { stdin, stdout, stderr });
+      if (code !== 0) return code;
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+  return execute({ command: "sudo", args: ["dnf", "-y", "install", "podman", "podman-compose"] }, { stdin, stdout, stderr });
+}
+
+async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function podmanCliAndComposeAreAvailable(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function waitForPodman({ execute, sleep, attempts = 90 }) {
+  for (let attempt = 0; attempt <= attempts; attempt += 1) {
+    if (await podmanIsReady(execute)) {
+      return true;
+    }
+    if (attempt < attempts) {
+      await sleep(2_000);
+    }
+  }
+  return false;
+}
+
+async function preparePodmanCliPath({ platform = process.platform, env = process.env, pathExists = fileExists }) {
+  let directories = [];
+  if (platform === "win32") {
+    directories = windowsPodmanPaths(env).cliDirectories;
+  } else if (platform === "darwin") {
+    directories = ["/Applications/Podman.app/Contents/Resources/bin"];
+  } else {
+    return null;
+  }
+  const directory = await firstExisting(directories, pathExists);
+  if (!directory) return null;
+  prependPath(env, directory, platform);
+  return directory;
+}
+
+function windowsPodmanPaths(env) {
+  const localAppData = env.LOCALAPPDATA;
+  const programFiles = env.ProgramFiles || env.PROGRAMFILES;
+  return {
+    applications: [
+      localAppData && win32.join(localAppData, "Programs", "Podman", "bin", "podman.exe"),
+      programFiles && win32.join(programFiles, "Red Hat", "Podman", "bin", "podman.exe")
+    ].filter(Boolean),
+    cliDirectories: [
+      localAppData && win32.join(localAppData, "Programs", "Podman", "bin"),
+      programFiles && win32.join(programFiles, "Red Hat", "Podman", "bin")
+    ].filter(Boolean)
+  };
+}
+
+function joinedPackagePath(mountedApplication) {
+  return posix.join(mountedApplication, "Contents", "MacOS", "installer.pkg");
 }
 
 async function ensureWindowsDocker({

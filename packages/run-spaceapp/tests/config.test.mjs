@@ -41,6 +41,7 @@ test("default config is versioned, loopback-only, and contains no secret fields"
     port: 4911,
     telemetry: false,
     profile: "light",
+    engine: "docker",
     accessMode: "isolated",
     companionsEnabled: false,
     optionalModules: "none",
@@ -93,6 +94,7 @@ test("loads legacy full and core profiles through the stable schema migration", 
       port: 4911,
       telemetry: false,
       profile: stableProfile,
+      engine: "docker",
       accessMode: "isolated",
       companionsEnabled: false,
       workspaces: []
@@ -121,6 +123,7 @@ test("loads schema 2 installations as isolated without changing durable settings
     port: 4911,
     telemetry: false,
     profile: "light",
+    engine: "docker",
     accessMode: "isolated",
     companionsEnabled: false,
     workspaces: []
