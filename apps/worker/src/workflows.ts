@@ -90,7 +90,7 @@ const dotGoalActivities = proxyActivities<typeof activities>({
   startToCloseTimeout: "2 minutes",
   retry: { maximumAttempts: 20, initialInterval: "5 seconds", backoffCoefficient: 2, maximumInterval: "2 minutes" }
 });
-export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
+export const dotGoalWakeSignal = defineSignal<[{ traceId?: string | null; traceparent?: string | null }]>(DOT_GOAL_SIGNAL);
 
 /**
  * Space Dots Goal: start one Chat step at a time and wait for it, until the
@@ -99,16 +99,20 @@ export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
  */
 export async function dotGoalWorkflow(input: { goalId: string; traceparent?: string | null }): Promise<{ goalStatus: string }> {
   let woken = false;
-  setHandler(dotGoalWakeSignal, () => { woken = true; });
+  let currentTraceparent = input.traceparent;
+  setHandler(dotGoalWakeSignal, ({ traceparent }) => {
+    woken = true;
+    if (traceparent) currentTraceparent = traceparent;
+  });
   const result = await runDotGoalLoop(input.goalId, {
-    step: (goalId) => dotGoalActivities.dotGoalStep({ goalId, traceparent: input.traceparent }),
-    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve({ goalId, runId, traceparent: input.traceparent }),
+    step: (goalId) => dotGoalActivities.dotGoalStep({ goalId, traceparent: currentTraceparent }),
+    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve({ goalId, runId, traceparent: currentTraceparent }),
     // A wake-up that arrives during an activity is kept and ends the next wait at once.
     wait: async (timeout) => { await condition(() => woken, timeout); woken = false; },
     shouldContinueAsNew: () => workflowInfo().continueAsNewSuggested || workflowInfo().historyLength > 10_000
   }, 300);
   // A long Goal continues as a new run to bound workflow history.
-  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId, traceparent: input.traceparent });
+  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId, traceparent: currentTraceparent });
   return { goalStatus: result.goalStatus ?? "UNKNOWN" };
 }
 

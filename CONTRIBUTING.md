@@ -72,15 +72,15 @@ disturbed. Ports and directories can be overridden through environment variables
 | `SPACEAPP_DEV_POSTGRES_PORT` | 5432 | PostgreSQL port |
 | `SPACEAPP_DEV_TEMPORAL_PORT` | 7233 | Temporal port |
 | `SPACEAPP_DEV_BIND_HOST` | 127.0.0.1 | Bind host for all services |
-| `SPACEAPP_DEV_STATE_DIR` | `.dev-stack` | State directory |
 
 When the API `/readyz` endpoint reports ok, the command prints the URL and a
 one-time owner setup token. Open the URL, create the owner, then start an
 OpenCode pane through the Getting Started room.
 
 Hot reload: a change in `apps/api/src` restarts the API, a change in
-`apps/web/src` hot-reloads in the browser, and a change in `packages/*` is
-rebuilt and picked up by the watching processes.
+`apps/web/src` hot-reloads in the browser. Internal `@space/*` packages must
+be built before starting the stack (`npm run build`); changes to package code
+require rebuilding, since dev:stack starts no package watcher.
 
 ```sh
 npm run dev:stack -- down    # stop all services

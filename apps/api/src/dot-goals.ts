@@ -48,9 +48,9 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
-  wake(goalId: string) {
+  wake(goalId: string, traceId?: string | null, traceparent?: string | null) {
     return this.client(async (client) => {
-      try { await client.workflow.getHandle(dotGoalWorkflowId(goalId)).signal(DOT_GOAL_SIGNAL); }
+      try { await client.workflow.getHandle(dotGoalWorkflowId(goalId)).signal(DOT_GOAL_SIGNAL, { traceId, traceparent }); }
       catch (error) { if (!(error instanceof WorkflowNotFoundError)) throw error; }
     });
   }
